@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: plagiobknd
+    runtime: docker
+    plan: free
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB
+        value: plagio
+      - key: FRONT_URL
+        sync: false
+      - key: DPI_RENDER
+        value: 300
