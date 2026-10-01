@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+ENV PIP_ROOT_USER_ACTION=ignore PIP_NO_CACHE_DIR=1
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
