@@ -11,4 +11,4 @@ services:
       - key: FRONT_URL
         sync: false
       - key: DPI_RENDER
-        value: 300
+        value: 200

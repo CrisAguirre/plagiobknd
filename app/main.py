@@ -95,9 +95,10 @@ async def replace_dates(
     dpi: int = Form(200),
 ):
     """
-    Reformulación principal: reemplazo 100% automático.
-    Detecta TODAS las fechas en TODAS las páginas, las elimina con inpaint
-    y sobrepone `new_text` in-situ. Devuelve el PDF COMPLETO.
+    Reemplazo automático: solo fechas de REGISTRO en cabecera.
+    Detecta fechas, filtra por etiqueta (FECHA/REGISTRO, sin NAC) en banda superior,
+    las elimina con inpaint y sobrepone `new_text` in-situ. Nacimiento y cuerpo intactos.
+    Devuelve el PDF COMPLETO.
     dpi 150=rápido, 200=equilibrado, 300=preciso (más lento).
     """
     t0 = time.time()
@@ -123,6 +124,7 @@ async def replace_dates(
         "pdf_name": file.filename,
         "new_text": new_text,
         "total": report["total"],
+        "skipped": report.get("skipped", 0),
         "pages": report["pages"],
         "per_page_counts": [p["count"] for p in report["per_page"]],
         "elapsed_s": round(time.time() - t0, 2),
