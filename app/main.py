@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from dotenv import load_dotenv
 
 from .schemas import Box, OcrResponse
-from .pdf_engine import render_page, apply_edit
+from .pdf_engine import render_page, apply_edit, detect_date_boxes, replace_dates_in_pdf
 from .db import log_job
 
 load_dotenv()
@@ -46,44 +46,19 @@ async def preview(file: UploadFile = File(...), page: int = Form(0), dpi: int = 
 @app.post("/ocr-detect")
 async def ocr_detect(file: UploadFile = File(...), page: int = Form(0)):
     """
-    MVP con pytesseract. Prod: cambiar a PaddleOCR GPU.
-    Devuelve boxes candidatas con regex de fecha.
+    Detecta TODAS las fechas visibles (numéricas, ISO, abreviadas y '12 de marzo de 2026').
+    Usa detect_date_boxes() compartido con /replace-dates.
     """
-    import re
     data = await file.read()
     try:
         img = render_page(data, page, dpi=300)
     except Exception as e:
         raise HTTPException(400, f"render error: {e}")
     try:
-        import pytesseract
-        from pytesseract import Output
-        d = pytesseract.image_to_data(img, lang="spa+eng", output_type=Output.DICT)
+        boxes = detect_date_boxes(img)
     except Exception as e:
         raise HTTPException(500, f"ocr no disponible (instala tesseract): {e}")
 
-    W, H = img.size
-    pattern = re.compile(r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}")
-    boxes = []
-    n = len(d["text"])
-    for i in range(n):
-        t = (d["text"][i] or "").strip()
-        try:
-            conf = float(d["conf"][i])
-        except Exception:
-            conf = -1
-        if conf < 50 or not t:
-            continue
-        if pattern.search(t):
-            x, y, w, h = d["left"][i], d["top"][i], d["width"][i], d["height"][i]
-            boxes.append({
-                "text": t,
-                "box": {
-                    "x0": x / W * 1000, "y0": y / H * 1000,
-                    "x1": (x + w) / W * 1000, "y1": (y + h) / H * 1000,
-                },
-                "conf": conf / 100.0,
-            })
     return {"page_index": page, "boxes": boxes}
 
 @app.post("/apply-edit")
@@ -111,3 +86,54 @@ async def apply_edit_endpoint(
     })
     return StreamingResponse(io.BytesIO(out_pdf), media_type="application/pdf",
                              headers={"Content-Disposition": f"attachment; filename=editado_p{page_index}.pdf"})
+
+
+@app.post("/replace-dates")
+async def replace_dates(
+    file: UploadFile = File(...),
+    new_text: str = Form(...),
+    dpi: int = Form(200),
+):
+    """
+    Reformulación principal: reemplazo 100% automático.
+    Detecta TODAS las fechas en TODAS las páginas, las elimina con inpaint
+    y sobrepone `new_text` in-situ. Devuelve el PDF COMPLETO.
+    dpi 150=rápido, 200=equilibrado, 300=preciso (más lento).
+    """
+    t0 = time.time()
+    new_text = (new_text or "").strip()
+    if not new_text:
+        raise HTTPException(400, "new_text vacío")
+    if len(new_text) > 60:
+        raise HTTPException(400, "new_text demasiado largo (máx 60)")
+    dpi = max(100, min(300, int(dpi or 200)))
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "PDF vacío")
+    try:
+        out_pdf, report = replace_dates_in_pdf(data, new_text, dpi=dpi)
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"replace-dates error: {e}")
+
+    log_job({
+        "pdf_name": file.filename,
+        "new_text": new_text,
+        "total": report["total"],
+        "pages": report["pages"],
+        "per_page_counts": [p["count"] for p in report["per_page"]],
+        "elapsed_s": round(time.time() - t0, 2),
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+    base = (file.filename or "documento.pdf").rsplit(".", 1)[0]
+    return StreamingResponse(
+        io.BytesIO(out_pdf), media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={base}_fechas_{new_text.replace('/', '-')}.pdf",
+            "X-Replacements-Total": str(report["total"]),
+            "X-Pages": str(report["pages"]),
+        },
+    )
