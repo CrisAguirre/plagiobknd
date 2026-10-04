@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from .schemas import Box, OcrResponse
 from .pdf_engine import render_page, apply_edit, detect_date_boxes, replace_dates_in_pdf
+from .profiles import PROFILES
 from .db import log_job
 
 load_dotenv()
@@ -92,14 +93,13 @@ async def apply_edit_endpoint(
 async def replace_dates(
     file: UploadFile = File(...),
     new_text: str = Form(...),
-    dpi: int = Form(200),
+    dpi: int = Form(None),
+    profile: str = Form("base"),
 ):
     """
     Reemplazo automático: solo fechas de REGISTRO en cabecera.
-    Detecta fechas, filtra por etiqueta (FECHA/REGISTRO, sin NAC) en banda superior,
-    las elimina con inpaint y sobrepone `new_text` in-situ. Nacimiento y cuerpo intactos.
-    Devuelve el PDF COMPLETO.
-    dpi 150=rápido, 200=equilibrado, 300=preciso (más lento).
+    profile: "base" = modelo congelado del doc 1; DOC2/3/4 para el resto.
+    dpi None = el del perfil.
     """
     t0 = time.time()
     new_text = (new_text or "").strip()
@@ -107,12 +107,13 @@ async def replace_dates(
         raise HTTPException(400, "new_text vacío")
     if len(new_text) > 60:
         raise HTTPException(400, "new_text demasiado largo (máx 60)")
-    dpi = max(100, min(300, int(dpi or 200)))
+    if profile not in PROFILES:
+        raise HTTPException(400, f"profile desconocido: {profile}")
     data = await file.read()
     if not data:
         raise HTTPException(400, "PDF vacío")
     try:
-        out_pdf, report = replace_dates_in_pdf(data, new_text, dpi=dpi)
+        out_pdf, report = replace_dates_in_pdf(data, new_text, dpi=dpi, profile=profile)
     except RuntimeError as e:
         raise HTTPException(500, str(e))
     except ValueError as e:
@@ -123,6 +124,7 @@ async def replace_dates(
     log_job({
         "pdf_name": file.filename,
         "new_text": new_text,
+        "profile": profile,
         "total": report["total"],
         "skipped": report.get("skipped", 0),
         "pages": report["pages"],
@@ -137,5 +139,6 @@ async def replace_dates(
             "Content-Disposition": f"attachment; filename={base}_fechas_{new_text.replace('/', '-')}.pdf",
             "X-Replacements-Total": str(report["total"]),
             "X-Pages": str(report["pages"]),
+            "X-Profile": profile,
         },
     )
